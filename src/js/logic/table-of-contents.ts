@@ -1,8 +1,16 @@
-import { downloadFile, formatBytes } from "../utils/helpers";
-import { initializeGlobalShortcuts } from "../utils/shortcuts-init.js";
+import { downloadFile, formatBytes } from '../utils/helpers';
+import { initializeGlobalShortcuts } from '../utils/shortcuts-init.js';
+import { isCpdfAvailable } from '../utils/cpdf-helper.js';
+import {
+  showWasmRequiredDialog,
+  WasmProvider,
+} from '../utils/wasm-provider.js';
+import { loadPdfWithPasswordPrompt } from '../utils/password-prompt.js';
+import { t } from '../i18n/index.js';
 
-
-const worker = new Worker(import.meta.env.BASE_URL + 'workers/table-of-contents.worker.js');
+const worker = new Worker(
+  import.meta.env.BASE_URL + 'workers/table-of-contents.worker.js'
+);
 
 let pdfFile: File | null = null;
 
@@ -29,15 +37,6 @@ const backToToolsBtn = document.getElementById(
   'back-to-tools'
 ) as HTMLButtonElement;
 
-interface GenerateTOCMessage {
-  command: 'generate-toc';
-  pdfData: ArrayBuffer;
-  title: string;
-  fontSize: number;
-  fontFamily: number;
-  addBookmark: boolean;
-}
-
 interface TOCSuccessResponse {
   status: 'success';
   pdfBytes: ArrayBuffer;
@@ -55,12 +54,13 @@ function showStatus(
   type: 'success' | 'error' | 'info' = 'info'
 ) {
   statusMessage.textContent = message;
-  statusMessage.className = `mt-4 p-3 rounded-lg text-sm ${type === 'success'
-    ? 'bg-green-900 text-green-200'
-    : type === 'error'
-      ? 'bg-red-900 text-red-200'
-      : 'bg-blue-900 text-blue-200'
-    }`;
+  statusMessage.className = `mt-4 p-3 rounded-lg text-sm ${
+    type === 'success'
+      ? 'bg-green-900 text-green-200'
+      : type === 'error'
+        ? 'bg-red-900 text-red-200'
+        : 'bg-blue-900 text-blue-200'
+  }`;
   statusMessage.classList.remove('hidden');
 }
 
@@ -88,15 +88,18 @@ function renderFileDisplay(file: File) {
   fileDisplayArea.appendChild(fileDiv);
 }
 
-function handleFileSelect(file: File) {
+async function handleFileSelect(file: File) {
   if (file.type !== 'application/pdf') {
     showStatus('Please select a PDF file.', 'error');
     return;
   }
 
-  pdfFile = file;
+  const result = await loadPdfWithPasswordPrompt(file);
+  if (!result) return;
+  result.pdf.destroy();
+  pdfFile = result.file;
   generateBtn.disabled = false;
-  renderFileDisplay(file);
+  renderFileDisplay(pdfFile);
 }
 
 dropZone.addEventListener('dragover', (e) => {
@@ -126,37 +129,47 @@ fileInput.addEventListener('change', (e) => {
 
 async function generateTableOfContents() {
   if (!pdfFile) {
-    showStatus('Please select a PDF file first.', 'error');
+    showStatus(t('tools:tableOfContents.selectPdfFirst'), 'error');
+    return;
+  }
+
+  // Check if CPDF is configured
+  if (!isCpdfAvailable()) {
+    showWasmRequiredDialog('cpdf');
     return;
   }
 
   try {
     generateBtn.disabled = true;
-    showStatus('Reading file (Main Thread)...', 'info');
+    showStatus(t('tools:tableOfContents.statusReadingFileMainThread'), 'info');
 
     const arrayBuffer = await pdfFile.arrayBuffer();
 
-    showStatus('Generating table of contents...', 'info');
+    showStatus(t('tools:tableOfContents.statusGenerating'), 'info');
 
-    const title = tocTitleInput.value || 'Table of Contents';
+    const title = tocTitleInput.value || t('tools:tableOfContents.name');
     const fontSize = parseInt(fontSizeSelect.value, 10);
     const fontFamily = parseInt(fontFamilySelect.value, 10);
     const addBookmark = addBookmarkCheckbox.checked;
 
-    const message: GenerateTOCMessage = {
+    const message = {
       command: 'generate-toc',
       pdfData: arrayBuffer,
       title,
       fontSize,
       fontFamily,
       addBookmark,
+      cpdfUrl: WasmProvider.getUrl('cpdf')! + 'coherentpdf.browser.min.js',
     };
 
     worker.postMessage(message, [arrayBuffer]);
   } catch (error) {
     console.error('Error reading file:', error);
     showStatus(
-      `Error reading file: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+      t('tools:tableOfContents.errorReadingFileWithMessage', {
+        message:
+          error instanceof Error ? error.message : t('common.unknownError'),
+      }),
       'error'
     );
     generateBtn.disabled = false;
@@ -171,10 +184,10 @@ worker.onmessage = (e: MessageEvent<TOCWorkerResponse>) => {
     const pdfBytes = new Uint8Array(pdfBytesBuffer);
 
     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-    downloadFile(blob, pdfFile?.name.replace('.pdf', '_with_toc.pdf') || 'output_with_toc.pdf');
+    downloadFile(blob, pdfFile?.name || 'document.pdf');
 
     showStatus(
-      'Table of contents generated successfully! Download started.',
+      t('tools:tableOfContents.successGeneratedDownloadStarted'),
       'success'
     );
 
@@ -185,15 +198,20 @@ worker.onmessage = (e: MessageEvent<TOCWorkerResponse>) => {
     fileDisplayArea.classList.add('hidden');
     generateBtn.disabled = true;
   } else if (e.data.status === 'error') {
-    const errorMessage = e.data.message || 'Unknown error occurred in worker.';
+    const errorMessage = e.data.message || t('common.unknownError');
     console.error('Worker Error:', errorMessage);
-    showStatus(`Error: ${errorMessage}`, 'error');
+    showStatus(
+      t('tools:tableOfContents.workerErrorWithMessage', {
+        message: errorMessage,
+      }),
+      'error'
+    );
   }
 };
 
 worker.onerror = (error) => {
   console.error('Worker error:', error);
-  showStatus('Worker error occurred. Check console for details.', 'error');
+  showStatus(t('tools:tableOfContents.workerErrorOccurred'), 'error');
   generateBtn.disabled = false;
 };
 

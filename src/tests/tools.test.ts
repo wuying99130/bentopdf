@@ -22,7 +22,16 @@ describe('Tool Categories Configuration', () => {
 
     // **KEY CHANGE**: This test now ensures IDs are unique only WITHIN this specific category.
     it('should not contain any duplicate tool IDs within its own list', () => {
-      const toolIds = category.tools.map((tool) => tool.id);
+      const toolIds = category.tools.map((tool) => {
+        if ('id' in tool) return tool.id;
+        if ('href' in tool) {
+          const match = (tool as { href: string }).href.match(
+            /\/([^/]+)\.html$/
+          );
+          return match ? match[1] : (tool as { href: string }).href;
+        }
+        return 'unknown';
+      });
       const uniqueToolIds = new Set(toolIds);
 
       // This assertion checks for duplicates inside THIS category only.
